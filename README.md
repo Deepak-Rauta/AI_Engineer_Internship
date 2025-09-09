@@ -1,4 +1,4 @@
-# Project Overview
+## **Project Overview**
 
 This is a complete RAG (Retrieval-Augmented Generation) chatbot that combines:
 
@@ -16,10 +16,6 @@ The flowchart generator shows the complete data flow:
 3. **Context Retrieval** → From documents or web
 4. **Gemini AI Processing** → Generate intelligent responses
 5. **Response Mode** → Concise or detailed output
-
-Thought for 4sI'll help you create a comprehensive chatbot project with RAG capabilities using the specified tech stack. Let me start by creating a flow chart to visualize the architecture, then build the entire project.
-
-Created RAG chatbot projectv1I've created a comprehensive RAG chatbot project with all the requested features. Here's what I've built:
 
 ## **Project Overview**
 
