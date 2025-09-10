@@ -16,3 +16,5 @@ langchain-google-genai==2.0.10
 pypdf==3.9.0
 python-docx==0.8.11
 python-multipart==0.0.6
+
+# Updated 10 sep
