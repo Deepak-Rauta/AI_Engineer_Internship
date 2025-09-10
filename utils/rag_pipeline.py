@@ -1,138 +1,111 @@
+"""
+RAG Pipeline utilities
+Combines document retrieval with web search
+"""
+from typing import List, Dict, Any, Optional, Tuple
 import logging
-from models.embeddings import get_embedding_model
-from utils.vector_store import get_vector_store
-from utils.document_processor import get_document_processor
-from utils.web_search import get_web_searcher
-from config.config import Config
+from models.embeddings import embedding_model
+from utils.web_search import web_searcher
+from models.llm import llm
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class RAGPipeline:
+    """Handles the complete RAG pipeline"""
+    
     def __init__(self):
-        self.embedding_model = get_embedding_model()
-        self.vector_store = get_vector_store()
-        self.document_processor = get_document_processor()
-        self.web_searcher = get_web_searcher()
+        self.embedding_model = embedding_model
+        self.web_searcher = web_searcher
+        self.llm = llm
     
-    def add_documents_from_files(self, uploaded_files):
-        results = {
-            'processed_files': [],
-            'total_chunks': 0,
-            'errors': []
-        }
+    def process_query(
+        self, 
+        query: str, 
+        response_mode: str = "detailed",
+        use_web_search: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Process user query through RAG pipeline
         
-        all_chunks = []
-        all_metadata = []
-        
-        for uploaded_file in uploaded_files:
-            try:
-                text = self.document_processor.process_uploaded_file(uploaded_file)
-                chunks = self.document_processor.chunk_text(text)
-                
-                for chunk in chunks:
-                    chunk_metadata = {
-                        'file_name': uploaded_file.name,
-                        'chunk_id': chunk['id'],
-                        'source': 'uploaded_file',
-                        'length': chunk['length']
-                    }
-                    all_chunks.append(chunk['text'])
-                    all_metadata.append(chunk_metadata)
-                
-                results['processed_files'].append({
-                    'name': uploaded_file.name,
-                    'chunks': len(chunks),
-                    'status': 'success'
-                })
-                
-            except Exception as e:
-                error_msg = f"Error with {uploaded_file.name}: {str(e)}"
-                results['errors'].append(error_msg)
-                results['processed_files'].append({
-                    'name': uploaded_file.name,
-                    'chunks': 0,
-                    'status': 'error',
-                    'error': str(e)
-                })
-        
-        if all_chunks:
-            embeddings = self.embedding_model.encode_documents(all_chunks)
-            self.vector_store.add_documents(all_chunks, embeddings, all_metadata)
-            results['total_chunks'] = len(all_chunks)
-        
-        return results
-    
-    def retrieve_context(self, query, use_web_search=True):
-        context_parts = []
-        source_info = []
-        
-        # Try document search first
-        rag_results = self._search_documents(query)
-        
-        if rag_results:
-            context_parts.append("Document Knowledge:")
-            for doc, similarity, metadata in rag_results:
-                context_parts.append(f"- {doc[:500]}...")
-                source_info.append(f"Doc: {metadata.get('file_name', 'Unknown')} ({similarity:.3f})")
-        
-        # Try web search if needed
-        if (not rag_results or len(rag_results) < 2) and use_web_search:
-            web_results = self._search_web(query)
+        Args:
+            query: User question
+            response_mode: 'concise' or 'detailed'
+            use_web_search: Whether to use web search
             
-            if web_results:
-                if context_parts:
-                    context_parts.append("\nWeb Results:")
-                else:
-                    context_parts.append("Web Results:")
-                
-                for result in web_results:
-                    context_parts.append(f"- {result['title']}: {result['snippet']}")
-                    source_info.append(f"Web: {result['title']}")
-        
-        context_text = "\n".join(context_parts) if context_parts else ""
-        source_text = "\n".join(source_info) if source_info else "No sources found"
-        
-        return context_text, source_text
-    
-    def _search_documents(self, query):
+        Returns:
+            Dictionary with response and metadata
+        """
         try:
-            query_embedding = self.embedding_model.encode_text(query)[0]
-            results = self.vector_store.search(
-                query_embedding, 
-                top_k=Config.MAX_CHUNKS,
-                threshold=Config.SIMILARITY_THRESHOLD
-            )
-            return results
-        except Exception as e:
-            logger.error(f"Document search error: {str(e)}")
-            return []
-    
-    def _search_web(self, query):
-        try:
-            if not self.web_searcher.is_configured():
-                return []
+            # Step 1: Search documents
+            doc_results = self.embedding_model.search_similar_documents(query)
             
-            results = self.web_searcher.search(query, num_results=3)
-            return results
+            # Step 2: Prepare document context
+            doc_context = self._format_document_context(doc_results)
+            
+            # Step 3: Web search if needed
+            web_context = ""
+            if use_web_search and (not doc_results or len(doc_results) < 2):
+                search_query = self.llm.generate_search_query(query)
+                web_context = self.web_searcher.get_search_context(search_query)
+            
+            # Step 4: Combine contexts
+            full_context = self._combine_contexts(doc_context, web_context)
+            
+            # Step 5: Generate response
+            response = self.llm.generate_response(query, full_context, response_mode)
+            
+            return {
+                'response': response,
+                'doc_sources': len(doc_results),
+                'web_search_used': bool(web_context),
+                'context_length': len(full_context)
+            }
+            
         except Exception as e:
-            logger.error(f"Web search error: {str(e)}")
-            return []
+            logger.error(f"Error in RAG pipeline: {e}")
+            return {
+                'response': f"Sorry, I encountered an error processing your query: {str(e)}",
+                'doc_sources': 0,
+                'web_search_used': False,
+                'context_length': 0
+            }
     
-    def get_pipeline_stats(self):
-        vector_stats = self.vector_store.get_stats()
-        return {
-            'vector_store': vector_stats,
-            'web_search_configured': self.web_searcher.is_configured(),
-            'embedding_model': self.embedding_model.model_name
-        }
+    def _format_document_context(self, doc_results: List[Tuple[str, float]]) -> str:
+        """Format document search results for context"""
+        if not doc_results:
+            return ""
+        
+        context_parts = ["Relevant Document Excerpts:"]
+        
+        for i, (doc, score) in enumerate(doc_results, 1):
+            context_parts.append(f"\n[Document {i}] (Relevance: {score:.2f})")
+            context_parts.append(doc[:500] + "..." if len(doc) > 500 else doc)
+        
+        return "\n".join(context_parts)
     
-    def clear_knowledge_base(self):
-        self.vector_store.clear_store()
+    def _combine_contexts(self, doc_context: str, web_context: str) -> str:
+        """Combine document and web search contexts"""
+        contexts = []
+        
+        if doc_context:
+            contexts.append(doc_context)
+        
+        if web_context:
+            contexts.append(web_context)
+        
+        return "\n\n".join(contexts)
+    
+    def add_documents(self, documents: List[str]) -> None:
+        """Add documents to the RAG system"""
+        try:
+            if documents:
+                self.embedding_model.build_vector_index(documents)
+                logger.info(f"Added {len(documents)} documents to RAG system")
+        except Exception as e:
+            logger.error(f"Error adding documents: {e}")
+            raise
 
-_rag_pipeline_instance = None
-
-def get_rag_pipeline():
-    global _rag_pipeline_instance
-    if _rag_pipeline_instance is None:
-        _rag_pipeline_instance = RAGPipeline()
-    return _rag_pipeline_instance
+# Global RAG pipeline instance
+rag_pipeline = RAGPipeline()

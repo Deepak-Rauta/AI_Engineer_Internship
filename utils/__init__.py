@@ -1,4 +1,8 @@
-from .vector_store import get_vector_store, VectorStore
-from .rag_pipeline import get_rag_pipeline, RAGPipeline
-from .document_processor import get_document_processor, DocumentProcessor
-from .web_search import get_web_searcher, WebSearcher
+"""
+Utils package initialization
+"""
+from .document_processor import doc_processor
+from .web_search import web_searcher
+from .rag_pipeline import rag_pipeline
+
+_all_ = ['doc_processor', 'web_searcher', 'rag_pipeline']

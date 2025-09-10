@@ -1,55 +1,163 @@
-from sentence_transformers import SentenceTransformer
+"""
+RAG Embedding Models
+Handles document embeddings and vector search
+"""
 import numpy as np
+from sentence_transformers import SentenceTransformer
+from typing import List, Dict, Any, Tuple
+import faiss
+import pickle
+import os
 import logging
-from config.config import Config
+from config.config import config
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class EmbeddingModel:
-    def __init__(self, model_name=None):
-        self.model_name = model_name or Config.EMBEDDING_MODEL
-        self.model = SentenceTransformer(self.model_name)
+    """Handles document embeddings and vector search"""
     
-    def encode_text(self, text):
-        if isinstance(text, str):
-            text = [text]
-        
-        embeddings = self.model.encode(text, convert_to_numpy=True)
-        return embeddings
+    def __init__(self):
+        """Initialize embedding model"""
+        try:
+            self.model = SentenceTransformer(config.EMBEDDING_MODEL)
+            self.index = None
+            self.documents = []
+            self.embeddings = None
+            logger.info(f"Initialized embedding model: {config.EMBEDDING_MODEL}")
+        except Exception as e:
+            logger.error(f"Failed to initialize embedding model: {e}")
+            raise
     
-    def encode_documents(self, documents):
-        embeddings = self.model.encode(documents, convert_to_numpy=True, show_progress_bar=True)
-        return embeddings
+    def create_embeddings(self, documents: List[str]) -> np.ndarray:
+        """
+        Create embeddings for documents
+        
+        Args:
+            documents: List of document chunks
+            
+        Returns:
+            Numpy array of embeddings
+        """
+        try:
+            logger.info(f"Creating embeddings for {len(documents)} documents")
+            embeddings = self.model.encode(documents, show_progress_bar=True)
+            return embeddings
+        except Exception as e:
+            logger.error(f"Error creating embeddings: {e}")
+            raise
     
-    def compute_similarity(self, query_embedding, doc_embeddings):
-        query_norm = query_embedding / np.linalg.norm(query_embedding)
-        doc_norms = doc_embeddings / np.linalg.norm(doc_embeddings, axis=1, keepdims=True)
-        similarities = np.dot(doc_norms, query_norm)
-        return similarities
+    def build_vector_index(self, documents: List[str]) -> None:
+        """
+        Build FAISS vector index from documents
+        
+        Args:
+            documents: List of document chunks
+        """
+        try:
+            self.documents = documents
+            self.embeddings = self.create_embeddings(documents)
+            
+            # Build FAISS index
+            dimension = self.embeddings.shape[1]
+            self.index = faiss.IndexFlatIP(dimension)  # Inner product for cosine similarity
+            
+            # Normalize embeddings for cosine similarity
+            faiss.normalize_L2(self.embeddings)
+            self.index.add(self.embeddings)
+            
+            logger.info(f"Built vector index with {len(documents)} documents")
+            
+        except Exception as e:
+            logger.error(f"Error building vector index: {e}")
+            raise
     
-    def find_most_similar(self, query, documents, doc_embeddings=None, top_k=5, threshold=None):
-        query_embedding = self.encode_text(query)[0]
+    def search_similar_documents(
+        self, 
+        query: str, 
+        k: int = None
+    ) -> List[Tuple[str, float]]:
+        """
+        Search for similar documents using vector similarity
         
-        if doc_embeddings is None:
-            doc_embeddings = self.encode_documents(documents)
-        
-        similarities = self.compute_similarity(query_embedding, doc_embeddings)
-        top_indices = np.argsort(similarities)[::-1][:top_k]
-        
-        threshold = threshold or Config.SIMILARITY_THRESHOLD
-        results = []
-        
-        for idx in top_indices:
-            similarity = similarities[idx]
-            if similarity >= threshold:
-                results.append((documents[idx], float(similarity), int(idx)))
-        
-        return results
+        Args:
+            query: Search query
+            k: Number of results to return
+            
+        Returns:
+            List of (document, score) tuples
+        """
+        if k is None:
+            k = config.MAX_CHUNKS
+            
+        try:
+            if self.index is None or len(self.documents) == 0:
+                logger.warning("No documents indexed")
+                return []
+            
+            # Create query embedding
+            query_embedding = self.model.encode([query])
+            faiss.normalize_L2(query_embedding)
+            
+            # Search
+            scores, indices = self.index.search(query_embedding, k)
+            
+            # Filter by similarity threshold
+            results = []
+            for score, idx in zip(scores[0], indices[0]):
+                if score >= config.SIMILARITY_THRESHOLD:
+                    results.append((self.documents[idx], float(score)))
+            
+            logger.info(f"Found {len(results)} relevant documents")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error searching documents: {e}")
+            return []
+    
+    def save_index(self, filepath: str) -> None:
+        """Save vector index and documents to file"""
+        try:
+            data = {
+                'documents': self.documents,
+                'embeddings': self.embeddings
+            }
+            
+            with open(filepath, 'wb') as f:
+                pickle.dump(data, f)
+            
+            # Save FAISS index
+            if self.index is not None:
+                faiss.write_index(self.index, filepath + '.faiss')
+            
+            logger.info(f"Saved index to {filepath}")
+            
+        except Exception as e:
+            logger.error(f"Error saving index: {e}")
+    
+    def load_index(self, filepath: str) -> None:
+        """Load vector index and documents from file"""
+        try:
+            if not os.path.exists(filepath):
+                logger.warning(f"Index file not found: {filepath}")
+                return
+            
+            with open(filepath, 'rb') as f:
+                data = pickle.load(f)
+            
+            self.documents = data['documents']
+            self.embeddings = data['embeddings']
+            
+            # Load FAISS index
+            faiss_path = filepath + '.faiss'
+            if os.path.exists(faiss_path):
+                self.index = faiss.read_index(faiss_path)
+            
+            logger.info(f"Loaded index from {filepath}")
+            
+        except Exception as e:
+            logger.error(f"Error loading index: {e}")
 
-_embedding_instance = None
-
-def get_embedding_model():
-    global _embedding_instance
-    if _embedding_instance is None:
-        _embedding_instance = EmbeddingModel()
-    return _embedding_instance
+# Global embedding model instance
+embedding_model = EmbeddingModel()

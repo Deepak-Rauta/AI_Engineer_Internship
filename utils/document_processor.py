@@ -1,114 +1,162 @@
+"""
+Document processing utilities
+Handles file upload, text extraction, and chunking
+"""
 import os
 import tempfile
-from pathlib import Path
-import logging
+from typing import List, Dict, Any
 import PyPDF2
-from docx import Document
-import chardet
-from config.config import Config
+import docx
+import logging
+from pathlib import Path
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class DocumentProcessor:
+    """Handles document processing and text extraction"""
+    
     def __init__(self):
-        self.chunk_size = Config.CHUNK_SIZE
-        self.chunk_overlap = Config.CHUNK_OVERLAP
+        self.supported_formats = ['.pdf', '.txt', '.docx', '.md']
     
-    def process_uploaded_file(self, uploaded_file):
-        file_extension = Path(uploaded_file.name).suffix.lower()
+    def extract_text_from_file(self, file_path: str) -> str:
+        """
+        Extract text from uploaded file
         
-        if file_extension not in Config.ALLOWED_EXTENSIONS:
-            raise ValueError(f"File type {file_extension} not supported")
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as tmp_file:
-            tmp_file.write(uploaded_file.getvalue())
-            tmp_path = tmp_file.name
-        
+        Args:
+            file_path: Path to the uploaded file
+            
+        Returns:
+            Extracted text content
+        """
         try:
+            file_extension = Path(file_path).suffix.lower()
+            
             if file_extension == '.pdf':
-                text = self._extract_pdf(tmp_path)
+                return self._extract_from_pdf(file_path)
+            elif file_extension == '.txt' or file_extension == '.md':
+                return self._extract_from_text(file_path)
             elif file_extension == '.docx':
-                text = self._extract_docx(tmp_path)
-            elif file_extension in ['.txt', '.md']:
-                text = self._extract_text(tmp_path)
+                return self._extract_from_docx(file_path)
             else:
-                raise ValueError(f"Unsupported file: {file_extension}")
-            
-            return text
-        finally:
-            os.unlink(tmp_path)
-    
-    def _extract_pdf(self, file_path):
-        text = ""
-        with open(file_path, 'rb') as file:
-            pdf_reader = PyPDF2.PdfReader(file)
-            for page in pdf_reader.pages:
-                text += page.extract_text() + "\n"
-        return text.strip()
-    
-    def _extract_docx(self, file_path):
-        doc = Document(file_path)
-        text = ""
-        for paragraph in doc.paragraphs:
-            text += paragraph.text + "\n"
-        return text.strip()
-    
-    def _extract_text(self, file_path):
-        with open(file_path, 'rb') as file:
-            raw_data = file.read()
-            encoding = chardet.detect(raw_data)['encoding']
-        
-        with open(file_path, 'r', encoding=encoding) as file:
-            return file.read().strip()
-    
-    def chunk_text(self, text):
-        sentences = text.replace('\n', ' ').split('. ')
-        
-        chunks = []
-        current_chunk = ""
-        chunk_id = 0
-        
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if not sentence:
-                continue
-            
-            if len(current_chunk) + len(sentence) > self.chunk_size and current_chunk:
-                chunks.append({
-                    'id': chunk_id,
-                    'text': current_chunk.strip(),
-                    'length': len(current_chunk)
-                })
+                raise ValueError(f"Unsupported file format: {file_extension}")
                 
-                # Start new chunk with some overlap
-                overlap = self._get_overlap(current_chunk)
-                current_chunk = overlap + " " + sentence
-                chunk_id += 1
-            else:
-                if current_chunk:
-                    current_chunk += ". " + sentence
-                else:
-                    current_chunk = sentence
-        
-        if current_chunk.strip():
-            chunks.append({
-                'id': chunk_id,
-                'text': current_chunk.strip(),
-                'length': len(current_chunk)
-            })
-        
-        return chunks
+        except Exception as e:
+            logger.error(f"Error extracting text from {file_path}: {e}")
+            raise
     
-    def _get_overlap(self, text):
-        if len(text) <= self.chunk_overlap:
-            return text
+    def _extract_from_pdf(self, file_path: str) -> str:
+        """Extract text from PDF file"""
+        text = ""
+        try:
+            with open(file_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                for page in pdf_reader.pages:
+                    text += page.extract_text() + "\n"
+            return text.strip()
+        except Exception as e:
+            logger.error(f"Error reading PDF: {e}")
+            raise
+    
+    def _extract_from_text(self, file_path: str) -> str:
+        """Extract text from text/markdown file"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as file:
+                return file.read()
+        except Exception as e:
+            logger.error(f"Error reading text file: {e}")
+            raise
+    
+    def _extract_from_docx(self, file_path: str) -> str:
+        """Extract text from DOCX file"""
+        try:
+            doc = docx.Document(file_path)
+            text = ""
+            for paragraph in doc.paragraphs:
+                text += paragraph.text + "\n"
+            return text.strip()
+        except Exception as e:
+            logger.error(f"Error reading DOCX: {e}")
+            raise
+    
+    def chunk_text(self, text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
+        """
+        Split text into overlapping chunks
         
-        overlap_text = text[-self.chunk_overlap:]
-        sentence_start = overlap_text.find('. ')
-        if sentence_start != -1:
-            overlap_text = overlap_text[sentence_start + 2:]
+        Args:
+            text: Input text to chunk
+            chunk_size: Size of each chunk
+            overlap: Overlap between chunks
+            
+        Returns:
+            List of text chunks
+        """
+        try:
+            if len(text) <= chunk_size:
+                return [text]
+            
+            chunks = []
+            start = 0
+            
+            while start < len(text):
+                end = start + chunk_size
+                
+                # Try to break at sentence boundary
+                if end < len(text):
+                    # Look for sentence endings
+                    for i in range(end, max(start + chunk_size // 2, end - 100), -1):
+                        if text[i] in '.!?':
+                            end = i + 1
+                            break
+                
+                chunk = text[start:end].strip()
+                if chunk:
+                    chunks.append(chunk)
+                
+                start = end - overlap
+                
+                if start >= len(text):
+                    break
+            
+            logger.info(f"Created {len(chunks)} chunks from text")
+            return chunks
+            
+        except Exception as e:
+            logger.error(f"Error chunking text: {e}")
+            return [text]  # Return original text as fallback
+    
+    def process_uploaded_file(self, uploaded_file) -> List[str]:
+        """
+        Process uploaded file and return text chunks
         
-        return overlap_text.strip()
+        Args:
+            uploaded_file: Streamlit uploaded file object
+            
+        Returns:
+            List of text chunks
+        """
+        try:
+            # Save uploaded file temporarily
+            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded_file.name).suffix) as tmp_file:
+                tmp_file.write(uploaded_file.getvalue())
+                tmp_path = tmp_file.name
+            
+            # Extract text
+            text = self.extract_text_from_file(tmp_path)
+            
+            # Clean up temporary file
+            os.unlink(tmp_path)
+            
+            # Chunk text
+            chunks = self.chunk_text(text)
+            
+            logger.info(f"Processed file: {uploaded_file.name}, created {len(chunks)} chunks")
+            return chunks
+            
+        except Exception as e:
+            logger.error(f"Error processing uploaded file: {e}")
+            raise
 
-def get_document_processor():
-    return DocumentProcessor()
+# Global document processor instance
+doc_processor = DocumentProcessor()

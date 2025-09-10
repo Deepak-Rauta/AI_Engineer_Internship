@@ -1,2 +1,7 @@
-from .llm import get_gemini_llm, GeminiLLM
-from .embeddings import get_embedding_model, EmbeddingModel
+"""
+Models package initialization
+"""
+from .llm import llm
+from .embeddings import embedding_model
+
+_all_ = ['llm', 'embedding_model']

@@ -1,83 +1,96 @@
+"""
+Web search utilities using SERPAPI
+Handles real-time web search integration
+"""
 import requests
+from typing import List, Dict, Any, Optional
 import logging
-from config.config import Config
+from config.config import config
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class WebSearcher:
-    def __init__(self):
-        self.api_key = Config.SERPAPI_KEY
-        self.base_url = "https://serpapi.com/search"
-        self.results_count = Config.SEARCH_RESULTS_COUNT
+    """Handles web search using SERPAPI"""
     
-    def search(self, query, num_results=None):
-        if not self.api_key:
-            return self._mock_results(query)
+    def __init__(self):
+        self.api_key = config.SERPAPI_KEY
+        self.base_url = "https://serpapi.com/search"
+    
+    def search(self, query: str, num_results: int = 5) -> List[Dict[str, Any]]:
+        """
+        Perform web search using SERPAPI
         
-        num_results = num_results or self.results_count
-        
-        params = {
-            'q': query,
-            'api_key': self.api_key,
-            'engine': 'google',
-            'num': num_results,
-            'format': 'json'
-        }
-        
+        Args:
+            query: Search query
+            num_results: Number of results to return
+            
+        Returns:
+            List of search results
+        """
         try:
-            response = requests.get(self.base_url, params=params, timeout=10)
+            params = {
+                'q': query,
+                'api_key': self.api_key,
+                'engine': 'google',
+                'num': num_results,
+                'gl': 'us',
+                'hl': 'en'
+            }
+            
+            response = requests.get(self.base_url, params=params)
             response.raise_for_status()
+            
             data = response.json()
             
-            organic_results = data.get('organic_results', [])
-            search_results = []
+            # Extract organic results
+            results = []
+            if 'organic_results' in data:
+                for result in data['organic_results']:
+                    results.append({
+                        'title': result.get('title', ''),
+                        'link': result.get('link', ''),
+                        'snippet': result.get('snippet', ''),
+                        'source': result.get('source', '')
+                    })
             
-            for result in organic_results:
-                search_results.append({
-                    'title': result.get('title', ''),
-                    'snippet': result.get('snippet', ''),
-                    'link': result.get('link', ''),
-                    'source': 'web_search'
-                })
-            
-            return search_results
+            logger.info(f"Found {len(results)} web search results for: {query}")
+            return results
             
         except Exception as e:
-            logger.error(f"Search error: {str(e)}")
-            return self._mock_results(query)
+            logger.error(f"Error performing web search: {e}")
+            return []
     
-    def _mock_results(self, query):
-        return [{
-            'title': 'Web Search Not Available',
-            'snippet': f'Search for "{query}" requires SerpAPI configuration.',
-            'link': 'https://serpapi.com/',
-            'source': 'fallback'
-        }]
-    
-    def format_results(self, results):
-        if not results:
-            return "No search results found."
+    def get_search_context(self, query: str, num_results: int = 3) -> str:
+        """
+        Get formatted search context for LLM
         
-        formatted = "Web Search Results:\n\n"
-        for i, result in enumerate(results, 1):
-            title = result.get('title', 'No Title')
-            snippet = result.get('snippet', 'No description')
-            link = result.get('link', '')
+        Args:
+            query: Search query
+            num_results: Number of results to include
             
-            formatted += f"{i}. {title}\n{snippet}\n"
-            if link:
-                formatted += f"Source: {link}\n"
-            formatted += "\n"
-        
-        return formatted.strip()
-    
-    def is_configured(self):
-        return bool(self.api_key)
+        Returns:
+            Formatted search context
+        """
+        try:
+            results = self.search(query, num_results)
+            
+            if not results:
+                return "No web search results found."
+            
+            context_parts = ["Web Search Results:"]
+            
+            for i, result in enumerate(results, 1):
+                context_parts.append(f"\n{i}. {result['title']}")
+                context_parts.append(f"   Source: {result['link']}")
+                context_parts.append(f"   Summary: {result['snippet']}")
+            
+            return "\n".join(context_parts)
+            
+        except Exception as e:
+            logger.error(f"Error getting search context: {e}")
+            return "Error retrieving web search results."
 
-_web_searcher_instance = None
-
-def get_web_searcher():
-    global _web_searcher_instance
-    if _web_searcher_instance is None:
-        _web_searcher_instance = WebSearcher()
-    return _web_searcher_instance
+# Global web searcher instance
+web_searcher = WebSearcher()
